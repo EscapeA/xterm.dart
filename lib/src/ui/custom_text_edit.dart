@@ -112,6 +112,11 @@ class CustomTextEditState extends State<CustomTextEdit>
   TextEditingController? _controller;
   VoidCallback? _controllerListener;
   DateTime? _skipImeDeleteUntil;
+  /// Characters recently committed to the terminal through this IME bridge.
+  ///
+  /// Used so candidate-word replacement (`deleteSurroundingText` + commit) can
+  /// erase the correct prefix without letting runaway IME deletes wipe a line.
+  int _recentCommittedLength = 0;
 
   @override
   void initState() {
@@ -507,15 +512,17 @@ class CustomTextEditState extends State<CustomTextEdit>
         previousText == initialText &&
         currentText.startsWith(initialText.substring(0, initTextLength - 1))) {
       if (!_consumeImeDeleteSuppression()) {
-        widget.onDelete();
+        _emitImeBackspaces(1, suppressFollowUp: false);
         return true;
       }
     } else if (currentText.length > initTextLength &&
         currentText.startsWith(initialText)) {
-      return _insertTextDelta(currentText.substring(initTextLength));
+      _emitImeInsert(currentText.substring(initTextLength));
+      return true;
     } else if (currentText.length > previousText.length &&
         previousText == initialText) {
-      return _insertTextDelta(currentText.substring(initTextLength));
+      _emitImeInsert(currentText.substring(initTextLength));
+      return true;
     }
     return false;
   }
@@ -528,15 +535,21 @@ class CustomTextEditState extends State<CustomTextEdit>
   ) {
     if (wasComposing) {
       // The committed text replaces the composing text entirely.
-      return _insertTextDelta(currentText.substring(initTextLength));
+      _emitImeInsert(currentText.substring(initTextLength));
+      return true;
     }
     if (currentText.length < previousText.length) {
       if (!_consumeImeDeleteSuppression()) {
-        widget.onDelete();
+        final deleted = previousText.length - currentText.length;
+        _emitImeBackspaces(
+          deleted > 0 ? deleted : 1,
+          suppressFollowUp: false,
+        );
         return true;
       }
     } else if (currentText.length > previousText.length) {
-      return _insertTextDelta(currentText.substring(previousText.length));
+      _emitImeInsert(currentText.substring(previousText.length));
+      return true;
     }
     return false;
   }
@@ -551,6 +564,9 @@ class CustomTextEditState extends State<CustomTextEdit>
 
   @override
   void performAction(TextInputAction action) {
+    // Enter / done ends the current soft-keyboard word; forget the tracked
+    // prefix so a later IME delete cannot erase previous shell output.
+    _recentCommittedLength = 0;
     widget.onAction(action);
   }
 
@@ -559,7 +575,7 @@ class CustomTextEditState extends State<CustomTextEdit>
     // Handle rich content insertion if needed
     // For a terminal, this might involve converting to text or specific escape codes
     if (content.data != null) {
-      widget.onInsert(utf8.decode(content.data!));
+      _emitImeInsert(utf8.decode(content.data!));
     }
   }
 
@@ -922,7 +938,7 @@ class CustomTextEditState extends State<CustomTextEdit>
       if (!selectionHandled) {
         final text = _extractTextFromPrivateCommand(data);
         if (text != null && text.isNotEmpty && !widget.readOnly) {
-          widget.onInsert(text);
+          _emitImeInsert(text);
         }
       }
     }
@@ -987,29 +1003,76 @@ class CustomTextEditState extends State<CustomTextEdit>
       _kImeDeleteAfterLengthKeys,
     );
 
-    // Record a suppression window so that a follow-up update from the IME does
-    // not trigger an additional delete.
-    _skipImeDeleteUntil = DateTime.now().add(_kImeDeleteSuppressionWindow);
+    final deleteCount = _resolveImeDeleteCount(
+      beforeLength: beforeLength,
+      afterLength: afterLength,
+    );
+    if (deleteCount <= 0) {
+      return false;
+    }
 
-    final bool handleAsBackspace = beforeLength > 0 || afterLength == 0;
+    _emitImeBackspaces(deleteCount);
+    return true;
+  }
 
-    if (handleAsBackspace) {
-      _emitImeBackspace();
-      return true;
+  /// Maps an IME surrounding-text delete into a safe terminal backspace count.
+  ///
+  /// Candidate replacement typically requests a small `beforeLength` equal to
+  /// the unfinished word (`tail` → 4). Some IMEs also send huge values such as
+  /// 128; those must stay clamped to a single backspace.
+  int _resolveImeDeleteCount({
+    required int beforeLength,
+    required int afterLength,
+  }) {
+    if (beforeLength > 0) {
+      if (beforeLength > _kMaxImeReplaceDelete) {
+        return 1;
+      }
+      if (_recentCommittedLength > 0) {
+        return beforeLength.clamp(1, _recentCommittedLength);
+      }
+      // Soft-keyboard candidate replace may arrive before we have tracking
+      // (or after state resets). Allow modest multi-delete in that case.
+      return beforeLength;
     }
 
     if (afterLength > 0) {
       // Forward delete is not supported by the embedded terminal. Fallback to
-      // a backspace to avoid dropping the entire line.
-      _emitImeBackspace();
-      return true;
+      // a single backspace to avoid dropping the entire line.
+      return 1;
     }
 
-    return false;
+    // Generic "delete" private commands without lengths.
+    return 1;
   }
 
-  void _emitImeBackspace() {
-    widget.onDelete();
+  void _emitImeInsert(String text) {
+    if (text.isEmpty) {
+      return;
+    }
+    _recentCommittedLength += text.length;
+    if (_recentCommittedLength > _kMaxTrackedCommittedLength) {
+      _recentCommittedLength = _kMaxTrackedCommittedLength;
+    }
+    widget.onInsert(text);
+  }
+
+  void _emitImeBackspaces(
+    int count, {
+    bool suppressFollowUp = true,
+  }) {
+    final safeCount = count < 1 ? 1 : count;
+    if (suppressFollowUp) {
+      // Record a suppression window so that a follow-up update from the IME does
+      // not trigger an additional delete.
+      _skipImeDeleteUntil = DateTime.now().add(_kImeDeleteSuppressionWindow);
+    }
+
+    for (var i = 0; i < safeCount; i++) {
+      widget.onDelete();
+    }
+    _recentCommittedLength = (_recentCommittedLength - safeCount)
+        .clamp(0, _kMaxTrackedCommittedLength);
 
     final resetState = _initEditingState.copyWith();
     _currentEditingState = resetState;
@@ -1059,6 +1122,12 @@ class CustomTextEditState extends State<CustomTextEdit>
   ];
 
   static const _kImeDeleteSuppressionWindow = Duration(milliseconds: 120);
+
+  /// Upper bound for multi-character IME deletes used by candidate replacement.
+  /// Larger values (commonly 128) are treated as a single backspace.
+  static const _kMaxImeReplaceDelete = 64;
+
+  static const _kMaxTrackedCommittedLength = 256;
 
   static const _kPrivateCommandTextKeys = <String>[
     'text',
