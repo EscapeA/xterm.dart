@@ -68,7 +68,7 @@ void main() {
       find.byType(CustomTextEdit),
     );
 
-    state.performPrivateCommand('deleteSurroundingText', {'beforeLength': 64});
+    state.performPrivateCommand('deleteSurroundingText', {'beforeLength': 1});
     await tester.pump();
 
     // Simulate the IME reporting that one of the placeholder characters was removed.
@@ -142,6 +142,164 @@ void main() {
     );
 
     expect(insertedText, ['日本語', 'かきく']);
+
+    focusNode.dispose();
+  });
+
+  testWidgets(
+    'candidate replacement deletes the unfinished word then inserts the candidate',
+    (tester) async {
+      final focusNode = FocusNode();
+      final inserted = <String>[];
+      var deleteCount = 0;
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Material(
+            child: CustomTextEdit(
+              focusNode: focusNode,
+              deleteDetection: true,
+              onInsert: inserted.add,
+              onDelete: () => deleteCount++,
+              onComposing: (_) {},
+              onAction: (_) {},
+              onKeyEvent: (_, _) => KeyEventResult.ignored,
+              child: const SizedBox.shrink(),
+            ),
+          ),
+        ),
+      );
+
+      focusNode.requestFocus();
+      await tester.pump();
+
+      final state = tester.state<CustomTextEditState>(
+        find.byType(CustomTextEdit),
+      );
+
+      // Soft-keyboard path: each letter is appended on top of the two-space
+      // deleteDetection placeholder and then reset.
+      for (final ch in ['t', 'a', 'i', 'l']) {
+        state.updateEditingValue(
+          TextEditingValue(
+            text: '  $ch',
+            selection: TextSelection.collapsed(offset: 3),
+          ),
+        );
+        await tester.pump();
+      }
+
+      expect(inserted.join(), 'tail');
+      expect(deleteCount, 0);
+
+      // IME candidate selection: erase "tail", then commit "tailscale".
+      state.performPrivateCommand('deleteSurroundingText', {
+        'beforeLength': 4,
+      });
+      await tester.pump();
+      state.updateEditingValue(
+        const TextEditingValue(
+          text: '  tailscale',
+          selection: TextSelection.collapsed(offset: 11),
+        ),
+      );
+      await tester.pump();
+
+      expect(deleteCount, 4);
+      expect(inserted.join(), 'tailtailscale');
+
+      focusNode.dispose();
+    },
+  );
+
+  testWidgets(
+    'candidate-sized deletes stay multi-char even without tracked commits',
+    (tester) async {
+      final focusNode = FocusNode();
+      var deleteCount = 0;
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Material(
+            child: CustomTextEdit(
+              focusNode: focusNode,
+              onInsert: (_) {},
+              onDelete: () => deleteCount++,
+              onComposing: (_) {},
+              onAction: (_) {},
+              onKeyEvent: (_, _) => KeyEventResult.ignored,
+              child: const SizedBox.shrink(),
+            ),
+          ),
+        ),
+      );
+
+      focusNode.requestFocus();
+      await tester.pump();
+
+      final state = tester.state<CustomTextEditState>(
+        find.byType(CustomTextEdit),
+      );
+
+      state.performPrivateCommand('deleteSurroundingText', {
+        'beforeLength': 4,
+      });
+      await tester.pump();
+
+      expect(deleteCount, 4);
+
+      focusNode.dispose();
+    },
+  );
+
+  testWidgets('enter clears tracked commit length for later IME deletes', (
+    tester,
+  ) async {
+    final focusNode = FocusNode();
+    var deleteCount = 0;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Material(
+          child: CustomTextEdit(
+            focusNode: focusNode,
+            deleteDetection: true,
+            onInsert: (_) {},
+            onDelete: () => deleteCount++,
+            onComposing: (_) {},
+            onAction: (_) {},
+            onKeyEvent: (_, _) => KeyEventResult.ignored,
+            child: const SizedBox.shrink(),
+          ),
+        ),
+      ),
+    );
+
+    focusNode.requestFocus();
+    await tester.pump();
+
+    final state = tester.state<CustomTextEditState>(
+      find.byType(CustomTextEdit),
+    );
+
+    state.updateEditingValue(
+      const TextEditingValue(
+        text: '  tail',
+        selection: TextSelection.collapsed(offset: 6),
+      ),
+    );
+    await tester.pump();
+
+    state.performAction(TextInputAction.done);
+    await tester.pump();
+
+    // After enter, a modest delete should still work for candidate replace of
+    // a new unfinished word, but a runaway 128 delete remains single BS.
+    state.performPrivateCommand('deleteSurroundingText', {
+      'beforeLength': 128,
+    });
+    await tester.pump();
+    expect(deleteCount, 1);
 
     focusNode.dispose();
   });
