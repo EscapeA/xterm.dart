@@ -444,6 +444,99 @@ void main() {
   );
 
   testWidgets(
+    'space confirms word so candidate only replaces the new word',
+    (tester) async {
+      final focusNode = FocusNode();
+      final inserted = <String>[];
+      var deleteCount = 0;
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Material(
+            child: CustomTextEdit(
+              focusNode: focusNode,
+              deleteDetection: true,
+              onInsert: inserted.add,
+              onDelete: () => deleteCount++,
+              onComposing: (_) {},
+              onAction: (_) {},
+              onKeyEvent: (_, _) => KeyEventResult.ignored,
+              child: const SizedBox.shrink(),
+            ),
+          ),
+        ),
+      );
+
+      focusNode.requestFocus();
+      await tester.pump();
+
+      final state = tester.state<CustomTextEditState>(
+        find.byType(CustomTextEdit),
+      );
+
+      // tail -> candidate tailscale
+      for (final ch in ['t', 'a', 'i', 'l']) {
+        state.updateEditingValue(
+          TextEditingValue(
+            text: '  $ch',
+            selection: TextSelection.collapsed(offset: 3),
+          ),
+        );
+        await tester.pump();
+      }
+      state.updateEditingValue(TextEditingValue.empty);
+      await tester.pump();
+      expect(deleteCount, 4);
+      state.updateEditingValue(
+        const TextEditingValue(
+          text: '  tailscale',
+          selection: TextSelection.collapsed(offset: 11),
+        ),
+      );
+      await tester.pump();
+
+      // space (confirmation boundary) — resets the tracked length
+      state.updateEditingValue(
+        const TextEditingValue(
+          text: '   ',
+          selection: TextSelection.collapsed(offset: 3),
+        ),
+      );
+      await tester.pump();
+      expect(inserted.last, ' ');
+
+      // i (new word)
+      state.updateEditingValue(
+        const TextEditingValue(
+          text: '  i',
+          selection: TextSelection.collapsed(offset: 3),
+        ),
+      );
+      await tester.pump();
+      expect(inserted.last, 'i');
+
+      // candidate ip: only "i" should be erased (1 char), NOT the whole line
+      state.updateEditingValue(TextEditingValue.empty);
+      await tester.pump();
+      expect(deleteCount, 5); // 4 (tail) + 1 (i)
+
+      state.updateEditingValue(
+        const TextEditingValue(
+          text: '  ip',
+          selection: TextSelection.collapsed(offset: 4),
+        ),
+      );
+      await tester.pump();
+      expect(inserted.last, 'ip');
+
+      // Net: tailscale + space + ip, not a cleared shell
+      expect(inserted.join(), 'tailtailscale ip');
+
+      focusNode.dispose();
+    },
+  );
+
+  testWidgets(
     'candidate replacement deletes the unfinished word then inserts the candidate',
     (tester) async {
       final focusNode = FocusNode();
