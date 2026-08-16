@@ -1131,9 +1131,18 @@ class CustomTextEditState extends State<CustomTextEdit>
     if (text.isEmpty) {
       return;
     }
-    _recentCommittedLength += text.length;
-    if (_recentCommittedLength > _kMaxTrackedCommittedLength) {
-      _recentCommittedLength = _kMaxTrackedCommittedLength;
+    // A non-word character (space, punctuation, CJK ideograph...) is an IME
+    // confirmation boundary: the word before it is committed, so a later
+    // candidate-replacement buffer clear must not erase it. Reset the tracked
+    // length so an upcoming in="" only erases the next unfinished word.
+    // (e.g. "tailscale" -> space -> "i" -> candidate "ip": only "i" is erased)
+    if (text.contains(RegExp('[^A-Za-z0-9]'))) {
+      _recentCommittedLength = 0;
+    } else {
+      _recentCommittedLength += text.length;
+      if (_recentCommittedLength > _kMaxTrackedCommittedLength) {
+        _recentCommittedLength = _kMaxTrackedCommittedLength;
+      }
     }
     widget.onInsert(text);
   }
