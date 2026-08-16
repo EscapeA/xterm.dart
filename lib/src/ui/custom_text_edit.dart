@@ -536,6 +536,20 @@ class CustomTextEditState extends State<CustomTextEdit>
       _emitImeInsert(toInsert);
       return true;
     }
+    // Android Chinese IMEs signal a candidate replacement by clearing the
+    // editing buffer (updateEditingValue('')) right before committing the
+    // full candidate. The composing text was only a preview; erase whatever
+    // we sent through this bridge so the candidate replaces it instead of
+    // appending (tail + tailscale -> tailtailscale).
+    if (currentText.isEmpty &&
+        previousText == initialText &&
+        _recentCommittedLength > 0) {
+      print(
+        '[IME-PROC] deleteDetection: buffer cleared; erasing $_recentCommittedLength chars',
+      );
+      _emitImeBackspaces(_recentCommittedLength);
+      return true;
+    }
     if (currentText.length < previousText.length &&
         previousText == initialText &&
         currentText.startsWith(initialText.substring(0, initTextLength - 1))) {
@@ -552,7 +566,11 @@ class CustomTextEditState extends State<CustomTextEdit>
       return true;
     } else if (currentText.length > previousText.length &&
         previousText == initialText) {
-      final String toInsert = currentText.substring(initTextLength);
+      // IME may commit with the placeholder prefix ('  tailscale') or as
+      // bare text ('tailscale'); only strip the prefix when present.
+      final String toInsert = currentText.startsWith(initialText)
+          ? currentText.substring(initTextLength)
+          : currentText;
       print(
         '[IME-PROC] deleteDetection: init→append insert="$toInsert" (prev="$previousText" len=$previousText.length)',
       );
