@@ -454,6 +454,12 @@ class CustomTextEditState extends State<CustomTextEdit>
     if (widget.controller != null && widget.controller!.value != value) {
       widget.controller!.value = value;
     }
+    // IME debug diagnostics (temporary, removed in final fix).
+    print(
+      '[IME-UV] in="${value.text}" inC=${value.composing.isCollapsed ? "none" : value.composing.toString()} '
+      'old="${oldValue.text}" oldC=${oldValue.composing.isCollapsed ? "none" : oldValue.composing.toString()} '
+      'dd=$widget.deleteDetection',
+    );
     // selection/composing
     if (widget.onSelectionChanged != null &&
         oldValue.selection != value.selection) {
@@ -468,6 +474,7 @@ class CustomTextEditState extends State<CustomTextEdit>
       final String composingText = _currentEditingState.composing.textInside(
         _currentEditingState.text,
       );
+      print('[IME-UV] composing preview="$composingText"');
       widget.onComposing(composingText);
       return;
     }
@@ -520,29 +527,41 @@ class CustomTextEditState extends State<CustomTextEdit>
       // committed string. Strip the prefix only when present.
       final bool hasPlaceholder = currentText.startsWith(initialText) &&
           currentText.length > initTextLength;
-      _emitImeInsert(
-        hasPlaceholder
-            ? currentText.substring(initTextLength)
-            : currentText,
+      final String toInsert = hasPlaceholder
+          ? currentText.substring(initTextLength)
+          : currentText;
+      print(
+        '[IME-PROC] deleteDetection wasComposing: placeholder=$hasPlaceholder insert="$toInsert"',
       );
+      _emitImeInsert(toInsert);
       return true;
     }
     if (currentText.length < previousText.length &&
         previousText == initialText &&
         currentText.startsWith(initialText.substring(0, initTextLength - 1))) {
       if (!_consumeImeDeleteSuppression()) {
+        print('[IME-PROC] deleteDetection: single BS (placeholder delete)');
         _emitImeBackspaces(1, suppressFollowUp: false);
         return true;
       }
     } else if (currentText.length > initTextLength &&
         currentText.startsWith(initialText)) {
-      _emitImeInsert(currentText.substring(initTextLength));
+      final String toInsert = currentText.substring(initTextLength);
+      print('[IME-PROC] deleteDetection: append w/ placeholder insert="$toInsert"');
+      _emitImeInsert(toInsert);
       return true;
     } else if (currentText.length > previousText.length &&
         previousText == initialText) {
-      _emitImeInsert(currentText.substring(initTextLength));
+      final String toInsert = currentText.substring(initTextLength);
+      print(
+        '[IME-PROC] deleteDetection: init→append insert="$toInsert" (prev="$previousText" len=$previousText.length)',
+      );
+      _emitImeInsert(toInsert);
       return true;
     }
+    print(
+      '[IME-PROC] deleteDetection: NO MATCH prev="$previousText"(${previousText.length}) cur="$currentText"(${currentText.length}) init="$initialText"(${initTextLength})',
+    );
     return false;
   }
 
@@ -564,16 +583,21 @@ class CustomTextEditState extends State<CustomTextEdit>
       final bool hasPlaceholder = widget.deleteDetection &&
           currentText.startsWith(_initEditingState.text) &&
           currentText.length > initTextLength;
-      _emitImeInsert(
-        hasPlaceholder
-            ? currentText.substring(initTextLength)
-            : currentText,
+      final String toInsert = hasPlaceholder
+          ? currentText.substring(initTextLength)
+          : currentText;
+      print(
+        '[IME-PROC] standard wasComposing: placeholder=$hasPlaceholder insert="$toInsert"',
       );
+      _emitImeInsert(toInsert);
       return true;
     }
     if (currentText.length < previousText.length) {
       if (!_consumeImeDeleteSuppression()) {
         final deleted = previousText.length - currentText.length;
+        print(
+          '[IME-PROC] standard delete: ${deleted > 0 ? deleted : 1} BS (prev="$previousText" cur="$currentText")',
+        );
         _emitImeBackspaces(
           deleted > 0 ? deleted : 1,
           suppressFollowUp: false,
@@ -581,9 +605,16 @@ class CustomTextEditState extends State<CustomTextEdit>
         return true;
       }
     } else if (currentText.length > previousText.length) {
-      _emitImeInsert(currentText.substring(previousText.length));
+      final String toInsert = currentText.substring(previousText.length);
+      print(
+        '[IME-PROC] standard append: insert="$toInsert" (prev="$previousText" len=$previousText.length)',
+      );
+      _emitImeInsert(toInsert);
       return true;
     }
+    print(
+      '[IME-PROC] standard NO MATCH prev="$previousText"(${previousText.length}) cur="$currentText"(${currentText.length})',
+    );
     return false;
   }
 
@@ -1122,6 +1153,9 @@ class CustomTextEditState extends State<CustomTextEdit>
     final deleteCount = _resolveImeDeleteCount(
       beforeLength: beforeLength,
       afterLength: afterLength,
+    );
+    print(
+      '[IME-DST] deleteSurroundingText before=$beforeLength after=$afterLength -> count=$deleteCount recent=$_recentCommittedLength',
     );
     if (deleteCount <= 0) {
       return false;
