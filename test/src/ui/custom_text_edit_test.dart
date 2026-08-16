@@ -354,7 +354,7 @@ void main() {
       // ...then the IME CLEARS the editing buffer ('' — the replacement
       // signal) right before committing the full candidate.
       state.updateEditingValue(
-        const TextEditingValue.empty,
+        const TextEditingValue.empty(),
       );
       await tester.pump();
 
@@ -421,7 +421,7 @@ void main() {
         await tester.pump();
       }
 
-      state.updateEditingValue(const TextEditingValue.empty);
+      state.updateEditingValue(const TextEditingValue.empty());
       await tester.pump();
       expect(deleteCount, 4);
 
