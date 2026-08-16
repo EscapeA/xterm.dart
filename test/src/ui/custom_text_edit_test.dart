@@ -147,6 +147,114 @@ void main() {
   });
 
   testWidgets(
+    'deleteDetection: composing commit with bare text inserts full candidate',
+    (tester) async {
+      final focusNode = FocusNode();
+      final inserted = <String>[];
+      var deleteCount = 0;
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Material(
+            child: CustomTextEdit(
+              focusNode: focusNode,
+              deleteDetection: true,
+              onInsert: inserted.add,
+              onDelete: () => deleteCount++,
+              onComposing: (_) {},
+              onAction: (_) {},
+              onKeyEvent: (_, _) => KeyEventResult.ignored,
+              child: const SizedBox.shrink(),
+            ),
+          ),
+        ),
+      );
+
+      focusNode.requestFocus();
+      await tester.pump();
+
+      final state = tester.state<CustomTextEditState>(
+        find.byType(CustomTextEdit),
+      );
+
+      // Chinese IME: pinyin composing (no placeholder prefix), then commit
+      // an English candidate with a *bare* text (no '  ' prefix).
+      state.updateEditingValue(
+        const TextEditingValue(
+          text: 'tail',
+          selection: TextSelection.collapsed(offset: 4),
+          composing: TextRange(start: 0, end: 4),
+        ),
+      );
+      state.updateEditingValue(
+        const TextEditingValue(
+          text: 'tailscale',
+          selection: TextSelection.collapsed(offset: 9),
+        ),
+      );
+
+      // The composing text was only a preview; the full candidate must be
+      // inserted, not stripped by the placeholder offset.
+      expect(inserted.join(), 'tailscale');
+      expect(deleteCount, 0);
+
+      focusNode.dispose();
+    },
+  );
+
+  testWidgets(
+    'deleteDetection: composing commit with placeholder prefix strips it',
+    (tester) async {
+      final focusNode = FocusNode();
+      final inserted = <String>[];
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Material(
+            child: CustomTextEdit(
+              focusNode: focusNode,
+              deleteDetection: true,
+              onInsert: inserted.add,
+              onDelete: () {},
+              onComposing: (_) {},
+              onAction: (_) {},
+              onKeyEvent: (_, _) => KeyEventResult.ignored,
+              child: const SizedBox.shrink(),
+            ),
+          ),
+        ),
+      );
+
+      focusNode.requestFocus();
+      await tester.pump();
+
+      final state = tester.state<CustomTextEditState>(
+        find.byType(CustomTextEdit),
+      );
+
+      // Windows-style IME: composing on top of the placeholder, commit keeps
+      // the '  ' prefix -> strip it to get the real candidate.
+      state.updateEditingValue(
+        const TextEditingValue(
+          text: '  tail',
+          selection: TextSelection.collapsed(offset: 6),
+          composing: TextRange(start: 2, end: 6),
+        ),
+      );
+      state.updateEditingValue(
+        const TextEditingValue(
+          text: '  tailscale',
+          selection: TextSelection.collapsed(offset: 11),
+        ),
+      );
+
+      expect(inserted.join(), 'tailscale');
+
+      focusNode.dispose();
+    },
+  );
+
+  testWidgets(
     'candidate replacement deletes the unfinished word then inserts the candidate',
     (tester) async {
       final focusNode = FocusNode();

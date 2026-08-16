@@ -539,7 +539,21 @@ class CustomTextEditState extends State<CustomTextEdit>
   ) {
     if (wasComposing) {
       // The committed text replaces the composing text entirely.
-      _emitImeInsert(currentText.substring(initTextLength));
+      // Two IME conventions exist:
+      //   1. currentText keeps the deleteDetection placeholder prefix
+      //      ('  tailscale') -> strip it.
+      //   2. currentText is the bare committed string ('tailscale'),
+      //      e.g. Chinese IMEs committing an English candidate after
+      //      pinyin composing -> use it as-is; the composing text was
+      //      only a preview and was never sent to the terminal.
+      final bool hasPlaceholder = widget.deleteDetection &&
+          currentText.startsWith(_initEditingState.text) &&
+          currentText.length > initTextLength;
+      _emitImeInsert(
+        hasPlaceholder
+            ? currentText.substring(initTextLength)
+            : currentText,
+      );
       return true;
     }
     if (currentText.length < previousText.length) {
