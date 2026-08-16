@@ -487,6 +487,7 @@ class CustomTextEditState extends State<CustomTextEdit>
             previousText,
             currentText,
             initTextLength,
+            wasComposing,
           )
         : _processStandardInput(
             previousText,
@@ -510,8 +511,22 @@ class CustomTextEditState extends State<CustomTextEdit>
     String previousText,
     String currentText,
     int initTextLength,
+    bool wasComposing,
   ) {
     final String initialText = _initEditingState.text;
+    if (wasComposing) {
+      // Same convention as _processStandardInput: the composing text was only
+      // a preview; the commit may keep the placeholder prefix or send the bare
+      // committed string. Strip the prefix only when present.
+      final bool hasPlaceholder = currentText.startsWith(initialText) &&
+          currentText.length > initTextLength;
+      _emitImeInsert(
+        hasPlaceholder
+            ? currentText.substring(initTextLength)
+            : currentText,
+      );
+      return true;
+    }
     if (currentText.length < previousText.length &&
         previousText == initialText &&
         currentText.startsWith(initialText.substring(0, initTextLength - 1))) {

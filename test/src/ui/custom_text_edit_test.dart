@@ -255,6 +255,58 @@ void main() {
   );
 
   testWidgets(
+    'no-deleteDetection: composing commit with bare text inserts full candidate',
+    (tester) async {
+      final focusNode = FocusNode();
+      final inserted = <String>[];
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Material(
+            child: CustomTextEdit(
+              focusNode: focusNode,
+              // deleteDetection defaults to false -> _processStandardInput.
+              onInsert: inserted.add,
+              onDelete: () {},
+              onComposing: (_) {},
+              onAction: (_) {},
+              onKeyEvent: (_, _) => KeyEventResult.ignored,
+              child: const SizedBox.shrink(),
+            ),
+          ),
+        ),
+      );
+
+      focusNode.requestFocus();
+      await tester.pump();
+
+      final state = tester.state<CustomTextEditState>(
+        find.byType(CustomTextEdit),
+      );
+
+      // ServerBox real-device scenario: pinyin composing then committing an
+      // English candidate with bare text (no placeholder).
+      state.updateEditingValue(
+        const TextEditingValue(
+          text: 'tail',
+          selection: TextSelection.collapsed(offset: 4),
+          composing: TextRange(start: 0, end: 4),
+        ),
+      );
+      state.updateEditingValue(
+        const TextEditingValue(
+          text: 'tailscale',
+          selection: TextSelection.collapsed(offset: 9),
+        ),
+      );
+
+      expect(inserted.join(), 'tailscale');
+
+      focusNode.dispose();
+    },
+  );
+
+  testWidgets(
     'candidate replacement deletes the unfinished word then inserts the candidate',
     (tester) async {
       final focusNode = FocusNode();
