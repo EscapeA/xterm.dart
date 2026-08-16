@@ -307,6 +307,143 @@ void main() {
   );
 
   testWidgets(
+    'deleteDetection: IME clears buffer then candidate commit replaces word',
+    (tester) async {
+      final focusNode = FocusNode();
+      final inserted = <String>[];
+      var deleteCount = 0;
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Material(
+            child: CustomTextEdit(
+              focusNode: focusNode,
+              deleteDetection: true,
+              onInsert: inserted.add,
+              onDelete: () => deleteCount++,
+              onComposing: (_) {},
+              onAction: (_) {},
+              onKeyEvent: (_, _) => KeyEventResult.ignored,
+              child: const SizedBox.shrink(),
+            ),
+          ),
+        ),
+      );
+
+      focusNode.requestFocus();
+      await tester.pump();
+
+      final state = tester.state<CustomTextEditState>(
+        find.byType(CustomTextEdit),
+      );
+
+      // Real Android IME sequence (from device log): pinyin letters are sent
+      // one at a time on top of the placeholder...
+      for (final ch in ['t', 'a', 'i', 'l']) {
+        state.updateEditingValue(
+          TextEditingValue(
+            text: '  $ch',
+            selection: TextSelection.collapsed(offset: 3),
+          ),
+        );
+        await tester.pump();
+      }
+      expect(inserted.join(), 'tail');
+      expect(deleteCount, 0);
+
+      // ...then the IME CLEARS the editing buffer ('' — the replacement
+      // signal) right before committing the full candidate.
+      state.updateEditingValue(
+        const TextEditingValue.empty,
+      );
+      await tester.pump();
+
+      // The tracked committed length (4: 'tail') is erased as backspaces so
+      // the candidate replaces instead of appending.
+      expect(deleteCount, 4);
+      expect(inserted.join(), 'tail');
+
+      // Candidate commit with placeholder prefix.
+      state.updateEditingValue(
+        const TextEditingValue(
+          text: '  tailscale',
+          selection: TextSelection.collapsed(offset: 11),
+        ),
+      );
+      await tester.pump();
+
+      // Net effect: tail -> 4 backspaces -> tailscale = tailscale.
+      expect(inserted.join(), 'tailtailscale');
+      expect(deleteCount, 4);
+
+      focusNode.dispose();
+    },
+  );
+
+  testWidgets(
+    'deleteDetection: bare-text candidate commit after buffer clear',
+    (tester) async {
+      final focusNode = FocusNode();
+      final inserted = <String>[];
+      var deleteCount = 0;
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Material(
+            child: CustomTextEdit(
+              focusNode: focusNode,
+              deleteDetection: true,
+              onInsert: inserted.add,
+              onDelete: () => deleteCount++,
+              onComposing: (_) {},
+              onAction: (_) {},
+              onKeyEvent: (_, _) => KeyEventResult.ignored,
+              child: const SizedBox.shrink(),
+            ),
+          ),
+        ),
+      );
+
+      focusNode.requestFocus();
+      await tester.pump();
+
+      final state = tester.state<CustomTextEditState>(
+        find.byType(CustomTextEdit),
+      );
+
+      for (final ch in ['t', 'a', 'i', 'l']) {
+        state.updateEditingValue(
+          TextEditingValue(
+            text: '  $ch',
+            selection: TextSelection.collapsed(offset: 3),
+          ),
+        );
+        await tester.pump();
+      }
+
+      state.updateEditingValue(const TextEditingValue.empty);
+      await tester.pump();
+      expect(deleteCount, 4);
+
+      // Some IMEs commit the candidate WITHOUT the placeholder prefix
+      // (observed: 'tailscale' not '  tailscale'). It must be inserted in
+      // full, not stripped by the placeholder offset.
+      state.updateEditingValue(
+        const TextEditingValue(
+          text: 'tailscale',
+          selection: TextSelection.collapsed(offset: 9),
+        ),
+      );
+      await tester.pump();
+
+      expect(inserted.last, 'tailscale');
+      expect(deleteCount, 4);
+
+      focusNode.dispose();
+    },
+  );
+
+  testWidgets(
     'candidate replacement deletes the unfinished word then inserts the candidate',
     (tester) async {
       final focusNode = FocusNode();
