@@ -518,7 +518,9 @@ void main() {
       // candidate ip: only "i" should be erased (1 char), NOT the whole line
       state.updateEditingValue(TextEditingValue.empty);
       await tester.pump();
-      expect(deleteCount, 5); // 4 (tail) + 1 (i)
+      // 4 (tail) + 1 (i). If the space had NOT reset the tracked length,
+      // this would erase 9+1 = 10 chars (tailscale + i) and wipe the line.
+      expect(deleteCount, 5);
 
       state.updateEditingValue(
         const TextEditingValue(
@@ -529,8 +531,10 @@ void main() {
       await tester.pump();
       expect(inserted.last, 'ip');
 
-      // Net: tailscale + space + ip, not a cleared shell
-      expect(inserted.join(), 'tailtailscale ip');
+      // inserted is an event log (it includes the chars erased by the
+      // replacement); the terminal screen state is tailscale + space + ip.
+      // The space reset guarantees only the new word's char was erased.
+      expect(inserted.join(), 'tailtailscale iip');
 
       focusNode.dispose();
     },
