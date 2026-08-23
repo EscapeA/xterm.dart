@@ -9,48 +9,17 @@ import 'package:xterm/src/core/buffer/range_line.dart';
 import 'package:xterm/src/ui/pointer_input.dart';
 import 'package:xterm/src/ui/selection_mode.dart';
 
-enum SelectionAnimationType {
-  insert, // New selection.
-  update, // Existing selection changed.
-}
-
-class SelectionAnimation {
-  final AnimationController controller;
-  final Animation<double> scaleAnimation;
-  final Animation<Offset> positionAnimation;
-  final SelectionAnimationType type;
-
-  SelectionAnimation({
-    required this.controller,
-    required this.scaleAnimation,
-    required this.positionAnimation,
-    required this.type,
-  });
-
-  void dispose() {
-    controller.dispose();
-  }
-}
-
 class TerminalController with ChangeNotifier {
   TerminalController({
     SelectionMode selectionMode = SelectionMode.line,
     PointerInputs pointerInputs = const PointerInputs({PointerInput.tap}),
     bool suspendPointerInput = false,
-    TickerProvider? vsync,
   }) : _selectionMode = selectionMode,
        _pointerInputs = pointerInputs,
-       _suspendPointerInputs = suspendPointerInput,
-       _vsync = vsync;
-
-  final TickerProvider? _vsync;
+       _suspendPointerInputs = suspendPointerInput;
 
   CellAnchor? _selectionBase;
   CellAnchor? _selectionExtent;
-
-  SelectionAnimation? _selectionAnimation;
-  CellOffset? _lastSelectionBegin;
-  CellOffset? _lastSelectionEnd;
 
   SelectionMode get selectionMode => _selectionMode;
   SelectionMode _selectionMode;
@@ -65,8 +34,6 @@ class TerminalController with ChangeNotifier {
   final _highlights = <TerminalHighlight>[];
 
   bool _isDisposing = false;
-
-  SelectionAnimation? get selectionAnimation => _selectionAnimation;
 
   BufferRange? get selection {
     final base = _selectionBase;
@@ -89,24 +56,6 @@ class TerminalController with ChangeNotifier {
       return;
     }
 
-    final newBegin = base.offset;
-    final newEnd = extent.offset;
-
-    final isNewSelection = _selectionBase == null || _selectionExtent == null;
-    final animationType = isNewSelection
-        ? SelectionAnimationType.insert
-        : SelectionAnimationType.update;
-
-    _selectionAnimation?.dispose();
-
-    _selectionAnimation = _createSelectionAnimation(
-      type: animationType,
-      oldBegin: _lastSelectionBegin,
-      oldEnd: _lastSelectionEnd,
-      newBegin: newBegin,
-      newEnd: newEnd,
-    );
-
     final oldBase = _selectionBase;
     final oldExtent = _selectionExtent;
 
@@ -127,113 +76,7 @@ class TerminalController with ChangeNotifier {
       _selectionMode = mode;
     }
 
-    _lastSelectionBegin = newBegin;
-    _lastSelectionEnd = newEnd;
-
     notifyListeners();
-  }
-
-  SelectionAnimation? _createSelectionAnimation({
-    required SelectionAnimationType type,
-    CellOffset? oldBegin,
-    CellOffset? oldEnd,
-    required CellOffset newBegin,
-    required CellOffset newEnd,
-  }) {
-    final vsync = _vsync;
-    if (vsync == null) {
-      return null;
-    }
-
-    final duration = type == SelectionAnimationType.insert
-        ? const Duration(milliseconds: 100)
-        : const Duration(milliseconds: 150);
-    final controller = _createAndWireSelectionController(duration, vsync);
-    final (
-      :scaleAnimation,
-      :positionAnimation,
-    ) = type == SelectionAnimationType.insert
-        ? _buildInsertTweens(controller)
-        : _buildUpdateTweens(controller, oldBegin, newBegin);
-
-    return SelectionAnimation(
-      controller: controller,
-      scaleAnimation: scaleAnimation,
-      positionAnimation: positionAnimation,
-      type: type,
-    );
-  }
-
-  ({Animation<double> scaleAnimation, Animation<Offset> positionAnimation})
-  _buildInsertTweens(AnimationController controller) {
-    final scaleAnimation = Tween<double>(
-      begin: 1.0,
-      end: 1.0,
-    ).animate(CurvedAnimation(parent: controller, curve: Curves.easeOut));
-
-    final positionAnimation = Tween<Offset>(
-      begin: Offset.zero,
-      end: Offset.zero,
-    ).animate(controller);
-
-    return (
-      scaleAnimation: scaleAnimation,
-      positionAnimation: positionAnimation,
-    );
-  }
-
-  ({Animation<double> scaleAnimation, Animation<Offset> positionAnimation})
-  _buildUpdateTweens(
-    AnimationController controller,
-    CellOffset? oldBegin,
-    CellOffset newBegin,
-  ) {
-    final scaleAnimation = Tween<double>(
-      begin: 1.0,
-      end: 1.0,
-    ).animate(controller);
-    final beginOffset = oldBegin != null && oldBegin != newBegin
-        ? Offset(
-            (oldBegin.x - newBegin.x).toDouble(),
-            (oldBegin.y - newBegin.y).toDouble(),
-          )
-        : Offset.zero;
-
-    final positionAnimation = Tween<Offset>(
-      begin: beginOffset,
-      end: Offset.zero,
-    ).animate(CurvedAnimation(parent: controller, curve: Curves.easeOut));
-
-    return (
-      scaleAnimation: scaleAnimation,
-      positionAnimation: positionAnimation,
-    );
-  }
-
-  AnimationController _createAndWireSelectionController(
-    Duration duration,
-    TickerProvider vsync,
-  ) {
-    final controller = AnimationController(duration: duration, vsync: vsync);
-
-    controller.addStatusListener((status) {
-      if (status == AnimationStatus.completed) {
-        _selectionAnimation?.dispose();
-        _selectionAnimation = null;
-        if (!_isDisposing) {
-          notifyListeners();
-        }
-      }
-    });
-
-    controller.addListener(() {
-      if (!_isDisposing) {
-        notifyListeners();
-      }
-    });
-
-    controller.forward();
-    return controller;
   }
 
   BufferRange _createRange(CellOffset begin, CellOffset end) {
@@ -254,14 +97,7 @@ class TerminalController with ChangeNotifier {
   }
 
   void clearSelection() {
-    _selectionAnimation?.dispose();
-    _selectionAnimation = null;
-
     _disposeSelectionAnchors();
-
-    _lastSelectionBegin = null;
-    _lastSelectionEnd = null;
-
     notifyListeners();
   }
 
@@ -305,9 +141,6 @@ class TerminalController with ChangeNotifier {
   @override
   void dispose() {
     _isDisposing = true;
-
-    _selectionAnimation?.dispose();
-    _selectionAnimation = null;
 
     _disposeSelectionAnchors();
 

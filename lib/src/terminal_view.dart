@@ -2,8 +2,10 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 import 'package:xterm/src/core/buffer/cell_offset.dart';
+import 'package:xterm/src/core/buffer/range.dart';
 import 'package:xterm/src/core/cursor_type.dart';
 import 'package:xterm/src/core/input/keys.dart';
 import 'package:xterm/src/core/mouse/button.dart';
@@ -219,16 +221,76 @@ class TerminalViewState extends State<TerminalView>
 
   late final textSizeNoti = ValueNotifier(widget.textStyle.fontSize);
 
+  /// Slides the selection highlight from where it was to where it now is.
+  ///
+  /// A selection is whole cells, so dragging one out moved the highlight a
+  /// cell at a time and it stepped rather than followed. Short enough that
+  /// the highlight is never far behind the pointer — this is catching the eye
+  /// up, not an effect, and a selection that lagged the pointer visibly would
+  /// be worse than one that stepped.
+  late final AnimationController _selectionAnimation = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 70),
+  );
+
+  /// The selection the highlight is on its way from. Null when there is
+  /// nothing to slide from — a selection that was just made, or just dropped.
+  BufferRange? _selectionAnimationFrom;
+
+  BufferRange? _lastSelection;
+
+  void _handleSelectionChange() {
+    final selection = _controller.selection;
+    final previous = _lastSelection;
+
+    // The controller notifies more than once for a single change, and the
+    // repeat carries the same selection. Answering it would stop the tween a
+    // moment after starting it, which is the whole animation gone.
+    if (selection == previous) {
+      return;
+    }
+
+    _lastSelection = selection;
+
+    if (selection == null || previous == null) {
+      // Nothing to slide from: a selection just made, or just dropped. Left
+      // at the far end of the tween, which is where it is drawn from.
+      _selectionAnimationFrom = null;
+      _selectionAnimation.stop();
+      _selectionAnimation.value = 1;
+      _applySelectionAnimation();
+      return;
+    }
+
+    _selectionAnimationFrom = previous;
+    _selectionAnimation.forward(from: 0);
+    _applySelectionAnimation();
+  }
+
+  void _applySelectionAnimation() {
+    // Before the first layout there is no render object to tell, and the
+    // selection it would be told about is already the one it will first draw.
+    if (_viewportKey.currentContext?.findRenderObject() == null) {
+      return;
+    }
+
+    renderTerminal
+      ..selectionFrom = _selectionAnimationFrom
+      ..selectionT = _selectionAnimation.value;
+  }
+
   @override
   void initState() {
     _focusNode = widget.focusNode ?? FocusNode();
     _focusNode.addListener(_handleFocusChange);
-    _controller = widget.controller ?? TerminalController(vsync: this);
+    _controller = widget.controller ?? TerminalController();
     _scrollController = widget.scrollController ?? ScrollController();
     _shortcutManager = ShortcutManager(
       shortcuts: widget.shortcuts ?? defaultTerminalShortcuts,
     );
     widget.terminal.addListener(_handleTerminalChange);
+    _controller.addListener(_handleSelectionChange);
+    _selectionAnimation.addListener(_applySelectionAnimation);
     _prevIsAltBuffer = widget.terminal.isUsingAltBuffer;
     _prevMouseMode = widget.terminal.mouseMode;
     super.initState();
@@ -257,7 +319,7 @@ class TerminalViewState extends State<TerminalView>
       if (oldWidget.controller == null) {
         _controller.dispose();
       }
-      _controller = widget.controller ?? TerminalController(vsync: this);
+      _controller = widget.controller ?? TerminalController();
     }
     if (oldWidget.scrollController != widget.scrollController) {
       if (oldWidget.scrollController == null) {
@@ -279,6 +341,9 @@ class TerminalViewState extends State<TerminalView>
 
   @override
   void dispose() {
+    stopAutoScroll();
+    _selectionAnimation.dispose();
+    _controller.removeListener(_handleSelectionChange);
     widget.terminal.removeListener(_handleTerminalChange);
     _focusNode.removeListener(_handleFocusChange);
     if (widget.focusNode == null) {
@@ -346,7 +411,6 @@ class TerminalViewState extends State<TerminalView>
                         cursorBlinkEnabled: _cursorBlinkEnabled,
                         cursorBlinkVisible: cursorBlinkVisible,
                         alwaysShowCursor: widget.alwaysShowCursor,
-                        paintSelectionHandles: widget.showToolbar,
                         onEditableRect: _onEditableRect,
                         composingText: composingText,
                       );
@@ -695,29 +759,93 @@ class TerminalViewState extends State<TerminalView>
     }
   }
 
-  void autoScrollDown(Offset localPointerPosition) {
-    final scrollThrshold = renderTerminal.lineHeight * 3;
+  /// How far from an edge a pointer starts dragging the view, and also the
+  /// distance past that point at which it reaches [_autoScrollMaxLines].
+  double get _autoScrollBand => renderTerminal.lineHeight * 3;
+
+  /// Lines a second at full deflection. Fast enough to cross a screen while
+  /// the eye is still on the pointer, slow enough to stop on a line.
+  static const _autoScrollMaxLines = 15.0;
+
+  Ticker? _autoScrollTicker;
+  Duration _autoScrollLastTick = Duration.zero;
+
+  /// Logical pixels a second, signed. Zero means the pointer is not in either
+  /// band and the ticker has nothing to do.
+  double _autoScrollVelocity = 0;
+
+  /// Run after each tick has scrolled, so whatever is following the pointer
+  /// can follow the content that moved under it. Without it a selection stops
+  /// growing the moment the pointer stops moving, which is the whole case this
+  /// exists for.
+  VoidCallback? _autoScrollOnTick;
+
+  /// Drives the view from a pointer held near or past an edge.
+  ///
+  /// Called on every pointer move, but the scrolling itself is on a ticker
+  /// rather than on those events: a pointer held still outside the edge sends
+  /// no more of them, and stopping there is exactly what a drag past the end
+  /// of the buffer must not do.
+  void updateAutoScroll(Offset localPointerPosition, {VoidCallback? onTick}) {
+    final band = _autoScrollBand;
+    final dy = localPointerPosition.dy;
+
+    // Deflection past the inner edge of each band, clamped so that a pointer
+    // dragged far outside the widget is not faster than one just outside it.
+    final past = dy < band
+        ? -(band - dy)
+        : dy > renderTerminal.size.height - band
+        ? dy - (renderTerminal.size.height - band)
+        : 0.0;
+
+    _autoScrollVelocity =
+        (past / band).clamp(-1.0, 1.0) *
+        _autoScrollMaxLines *
+        renderTerminal.lineHeight;
+    _autoScrollOnTick = onTick;
+
+    if (_autoScrollVelocity == 0) {
+      stopAutoScroll();
+      return;
+    }
+
+    if (_autoScrollTicker == null) {
+      _autoScrollLastTick = Duration.zero;
+      _autoScrollTicker = createTicker(_onAutoScrollTick)..start();
+    }
+  }
+
+  void stopAutoScroll() {
+    _autoScrollTicker?.dispose();
+    _autoScrollTicker = null;
+    _autoScrollVelocity = 0;
+    _autoScrollOnTick = null;
+  }
+
+  void _onAutoScrollTick(Duration elapsed) {
     final position = _scrollableKey.currentState?.position;
-    if (position == null) return;
-    final notBottom = position.pixels < position.maxScrollExtent;
-    final shouldScrollDown =
-        localPointerPosition.dy > renderTerminal.size.height - scrollThrshold;
-    if (shouldScrollDown && notBottom) {
-      position.animateTo(
-        position.pixels + scrollThrshold,
-        duration: const Duration(milliseconds: 177),
-        curve: Curves.fastEaseInToSlowEaseOut,
-      );
+    if (position == null) {
+      stopAutoScroll();
+      return;
     }
-    final notTop = position.pixels > 0;
-    final shouldScrollUp = localPointerPosition.dy < scrollThrshold;
-    if (shouldScrollUp && notTop) {
-      position.animateTo(
-        position.pixels - scrollThrshold,
-        duration: const Duration(milliseconds: 177),
-        curve: Curves.fastEaseInToSlowEaseOut,
-      );
+
+    // The first tick has no interval behind it.
+    final dt = _autoScrollLastTick == Duration.zero
+        ? Duration.zero
+        : elapsed - _autoScrollLastTick;
+    _autoScrollLastTick = elapsed;
+
+    final target = (position.pixels +
+            _autoScrollVelocity * dt.inMicroseconds / 1e6)
+        .clamp(position.minScrollExtent, position.maxScrollExtent);
+
+    // `jumpTo` rather than `animateTo`: the ticker is already the animation,
+    // and starting another one per frame is what made this stutter.
+    if (target != position.pixels) {
+      position.jumpTo(target);
     }
+
+    _autoScrollOnTick?.call();
   }
 }
 
@@ -738,7 +866,6 @@ class _TerminalView extends LeafRenderObjectWidget {
     required this.cursorBlinkEnabled,
     required this.cursorBlinkVisible,
     required this.alwaysShowCursor,
-    required this.paintSelectionHandles,
     this.onEditableRect,
     this.composingText,
   });
@@ -771,7 +898,6 @@ class _TerminalView extends LeafRenderObjectWidget {
 
   final bool alwaysShowCursor;
 
-  final bool paintSelectionHandles;
 
   final EditableRectCallback? onEditableRect;
 
@@ -794,7 +920,6 @@ class _TerminalView extends LeafRenderObjectWidget {
       cursorBlinkEnabled: cursorBlinkEnabled,
       cursorBlinkVisible: cursorBlinkVisible,
       alwaysShowCursor: alwaysShowCursor,
-      paintSelectionHandles: paintSelectionHandles,
       onEditableRect: onEditableRect,
       composingText: composingText,
     );
@@ -817,7 +942,6 @@ class _TerminalView extends LeafRenderObjectWidget {
       ..cursorBlinkEnabled = cursorBlinkEnabled
       ..cursorBlinkVisible = cursorBlinkVisible
       ..alwaysShowCursor = alwaysShowCursor
-      ..paintSelectionHandles = paintSelectionHandles
       ..onEditableRect = onEditableRect
       ..composingText = composingText;
   }
