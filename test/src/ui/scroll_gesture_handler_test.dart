@@ -68,6 +68,36 @@ void main() {
 
       expect(outputs, contains('\x1b[<65;6;2M'));
     });
+
+    testWidgets(
+      'touch drag falls back to simulated scroll without mouse mode',
+      (tester) async {
+        final outputs = <String>[];
+        final terminal = Terminal(onOutput: outputs.add);
+        terminal.resize(20, 10);
+        terminal.write('\x1b[?1049h');
+
+        await tester.pumpWidget(_ScrollHarness(terminal: terminal));
+
+        final gesture = await tester.startGesture(
+          const Offset(50, 50),
+          kind: PointerDeviceKind.touch,
+        );
+        await gesture.moveTo(const Offset(50, 10));
+        await gesture.up();
+
+        expect(outputs, contains('\x1b[B'));
+
+        // The alt buffer alone forwards the gesture; no mouse mode was
+        // enabled, so nothing may be reported as a mouse event. Without this
+        // the test would also pass if the drag were reported both ways.
+        expect(
+          outputs,
+          isNot(contains(predicate<String>((output) => output.contains('M')))),
+          reason: 'a mouse report was sent alongside the arrow key',
+        );
+      },
+    );
   });
 }
 

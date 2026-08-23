@@ -115,23 +115,21 @@ class _TerminalScrollGestureHandlerState
     if (lines > 0) {
       final up = _accumulatedScroll < 0;
       for (var i = 0; i < lines; i++) {
-        _sendScrollEvent(up, fromTouch: fromTouch);
+        _sendScrollEvent(up);
       }
       _accumulatedScroll -= (up ? -lines : lines) * threshold;
     }
   }
 
   /// Send a single scroll event to the terminal. The event is first offered to
-  /// terminal mouse reporting. If it is not handled and [simulateScroll] is
-  /// enabled, this falls back to sending
-  /// up/down arrow keys — but only when the application has NOT enabled mouse
-  /// mode (to avoid sending unintended arrow keys to apps expecting mouse
-  /// events).
+  /// terminal mouse reporting, and if that does not consume it and
+  /// [simulateScroll] is enabled, this falls back to sending up/down arrow
+  /// keys.
   ///
-  /// When [fromTouch] is true (touch drag on mobile), the arrow key fallback
-  /// is disabled to avoid flooding the terminal with key events during
-  /// continuous touch gestures.
-  void _sendScrollEvent(bool up, {bool fromTouch = false}) {
+  /// The fallback is decided by whether `mouseInput` reported the wheel, not by
+  /// whether mouse mode is on. An application can have mouse mode enabled in a
+  /// form that does not report scrolling, and it still gets the arrow keys.
+  void _sendScrollEvent(bool up) {
     final position = widget.getCellOffset(lastPointerPosition);
     final handled = widget.terminal.mouseInput(
       up ? TerminalMouseButton.wheelUp : TerminalMouseButton.wheelDown,
@@ -139,7 +137,7 @@ class _TerminalScrollGestureHandlerState
       position,
     );
 
-    if (!handled && !fromTouch && widget.simulateScroll) {
+    if (!handled && widget.simulateScroll) {
       widget.terminal.keyInput(
         up ? TerminalKey.arrowUp : TerminalKey.arrowDown,
       );
